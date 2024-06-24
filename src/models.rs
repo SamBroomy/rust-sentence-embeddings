@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use std::fmt::Debug;
 use std::fs::{self, File};
 use std::marker::PhantomData;
 use std::path::PathBuf;
@@ -15,6 +16,7 @@ use hf_hub::api::sync::{ApiBuilder, ApiRepo};
 use hf_hub::Repo;
 use serde::{Deserialize, Deserializer};
 use tokenizers::Tokenizer;
+use tracing::info;
 
 // https://huggingface.co/models?library=safetensors&other=bert&sort=trending
 
@@ -361,15 +363,27 @@ impl EmbeddingModel {
         { embeddings / norm }.map_err(E::msg)
     }
 
-    pub fn encode(
+    #[tracing::instrument(skip(self))]
+    pub fn encode<I, S>(
         &self,
-        sentences: &[&str],
-        batch_size: impl Into<Option<usize>>,
+        sentences: I,
+        batch_size: impl Into<Option<usize>> + Debug,
         normalize_embeddings: bool,
-    ) -> Result<Tensor> {
+    ) -> Result<Tensor>
+    where
+        I: IntoIterator<Item = S> + Debug,
+        S: AsRef<str>,
+    {
+        let start = std::time::Instant::now();
         let batch_size = batch_size.into().unwrap_or(32);
+        let sentences = sentences.into_iter().collect::<Vec<_>>();
+
         // Sort sentences by length
-        let mut sentence_lengths: Vec<_> = sentences.iter().map(|s| s.len()).enumerate().collect();
+        let mut sentence_lengths: Vec<_> = sentences
+            .iter()
+            .map(|s| s.as_ref().len())
+            .enumerate()
+            .collect();
         sentence_lengths.sort_unstable_by(|a, b| a.1.cmp(&b.1));
 
         let length_sorted_idx = sentence_lengths
@@ -378,14 +392,24 @@ impl EmbeddingModel {
             .collect::<Vec<_>>();
         let sentences_sorted = length_sorted_idx
             .iter()
-            .map(|&idx| sentences[idx])
+            .map(|&idx| sentences[idx].as_ref())
             .collect::<Vec<_>>();
 
         let mut all_embeddings = Vec::new();
 
+        let batches = (sentences_sorted.len() + batch_size - 1) / batch_size;
+
         for batch in sentences_sorted.chunks(batch_size) {
+            let start = std::time::Instant::now();
             let input_ids = self.tokenize(batch)?;
             let embeddings = self.forward(&input_ids)?;
+            if batches > 1 {
+                info!(
+                    "Encoded batch of {:?} sentences in {:?}",
+                    batch.len(),
+                    start.elapsed()
+                );
+            }
             all_embeddings.push(embeddings);
         }
 
@@ -393,12 +417,21 @@ impl EmbeddingModel {
 
         // Reorder embeddings to original order
         let mut reordered_embeddings =
-            vec![Tensor::zeros(&[1], DType::U32, &self.device())?; sentences.len()];
+            vec![
+                Tensor::zeros(&[embeddings.dim(1)?], DType::F32, &self.device())?;
+                embeddings.dim(0)?
+            ];
         for (i, &idx) in length_sorted_idx.iter().enumerate() {
-            reordered_embeddings[idx] = all_embeddings[i].clone();
+            reordered_embeddings[idx] = embeddings.get(i)?;
         }
 
         let embeddings = Tensor::stack(&reordered_embeddings, 0)?;
+
+        println!(
+            "Encoded {:?} sentences in {:?}",
+            sentences.len(),
+            start.elapsed()
+        );
 
         if normalize_embeddings {
             self.normalize_l2(&embeddings)

@@ -5,10 +5,17 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
-candle-core = { version = "0.5.1", features = ["metal"] }
-candle-nn = "0.5.1"
-candle-transformers = "0.5.1"
-hf-hub = { version = "0.3.2", features = ["tokio"] }
-serde = { version = "1.0.203", features = ["derive"] }
-serde_json = "1.0.117"
-tokenizers = "0.19.1"
+candle-core = { version = "0.5", features = ["metal"] }
+candle-nn = "0.5"
+candle-transformers = "0.5"
+hf-hub = { version = "0.3", features = ["tokio"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokenizers = "0.19"
+
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+
+tracing = "0.1"
+tracing-subscriber = "0.3"
+reqwest = "0.12"
