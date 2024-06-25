@@ -4,14 +4,10 @@
 /// In new terminal window
 /// ```sh
 /// cargo run --example grpc_client```
+mod utils;
+use utils::embedding_service::{embedding_service_client::EmbeddingServiceClient, EmbedRequest};
+
 use tonic::Request;
-
-pub mod embedding_service {
-    tonic::include_proto!("embedding");
-}
-
-use embedding_service::embedding_service_client::EmbeddingServiceClient;
-use embedding_service::EmbedRequest;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

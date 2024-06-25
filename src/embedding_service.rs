@@ -6,14 +6,31 @@ use tonic::{Request, Response, Status};
 
 pub mod embedding_service {
     tonic::include_proto!("embedding");
-}
 
-use embedding_service::embedding_service_server::EmbeddingService;
-use embedding_service::{EmbedBatchRequest, EmbedBatchResponse, EmbedRequest, Embedding};
+    impl From<Vec<f32>> for Embedding {
+        fn from(values: Vec<f32>) -> Self {
+            Embedding { values }
+        }
+    }
 
-impl From<Vec<f32>> for Embedding {
-    fn from(values: Vec<f32>) -> Self {
-        Self { values }
+    impl From<Embedding> for Vec<f32> {
+        fn from(embedding: Embedding) -> Self {
+            embedding.values
+        }
+    }
+
+    impl From<Vec<Vec<f32>>> for EmbedBatchResponse {
+        fn from(embeddings: Vec<Vec<f32>>) -> Self {
+            EmbedBatchResponse {
+                embeddings: embeddings.into_iter().map(Embedding::from).collect(),
+            }
+        }
+    }
+
+    impl From<EmbedBatchResponse> for Vec<Vec<f32>> {
+        fn from(response: EmbedBatchResponse) -> Self {
+            response.embeddings.into_iter().map(Vec::from).collect()
+        }
     }
 }
 
@@ -26,6 +43,9 @@ impl EmbeddingServiceImpl {
         Self { model }
     }
 }
+
+use embedding_service::embedding_service_server::EmbeddingService;
+use embedding_service::{EmbedBatchRequest, EmbedBatchResponse, EmbedRequest, Embedding};
 
 #[tonic::async_trait]
 impl EmbeddingService for EmbeddingServiceImpl {
@@ -42,7 +62,7 @@ impl EmbeddingService for EmbeddingServiceImpl {
         let embedding_vec = EmbeddingModel::format_embeddings(embedding)
             .map_err(|e| Status::internal(format!("Error formatting embeddings: {:?}", e)))?;
 
-        Ok(Response::new(embedding_vec.into()))
+        Ok(Response::new(Embedding::from(embedding_vec)))
     }
 
     async fn embed_batch(
@@ -69,8 +89,6 @@ impl EmbeddingService for EmbeddingServiceImpl {
         let embeddings_vec = EmbeddingModel::format_batch_embeddings(embeddings)
             .map_err(|e| Status::internal(format!("Error formatting batch embeddings: {:?}", e)))?;
 
-        Ok(Response::new(EmbedBatchResponse {
-            embeddings: embeddings_vec.into_iter().map(Embedding::from).collect(),
-        }))
+        Ok(Response::new(EmbedBatchResponse::from(embeddings_vec)))
     }
 }
