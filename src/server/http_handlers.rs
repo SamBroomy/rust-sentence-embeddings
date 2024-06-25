@@ -1,16 +1,17 @@
-use candle_core::Tensor;
-
 use crate::EmbeddingModelRef;
 
+use axum::serve::Serve;
 use axum::{
     extract::State,
     http::StatusCode,
     routing::{get, post},
     Json, Router,
 };
+use candle_core::Tensor;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tokio::net::TcpListener;
+use std::{net::SocketAddr, sync::Arc};
+use tokio::runtime::Handle;
+use tokio::task;
 use tracing::info;
 
 #[derive(Serialize, Deserialize)]
@@ -102,10 +103,14 @@ fn build_router(model: EmbeddingModelRef) -> Router {
         .with_state(Arc::clone(&model))
 }
 
-pub fn create_http_server(
-    tcp_listener: TcpListener,
-    model: EmbeddingModelRef,
-) -> axum::serve::Serve<Router, Router> {
+pub fn create_http_server(port: SocketAddr, model: EmbeddingModelRef) -> Serve<Router, Router> {
+    // Don't want to colour the function. No reason this cant be a blocking call.
+
+    // Use a blocking call to create the runtime and bind the listener.
+    let listener = task::block_in_place(move || {
+        Handle::current()
+            .block_on(async move { tokio::net::TcpListener::bind(port).await.unwrap() })
+    });
     let http_app = build_router(model);
-    axum::serve(tcp_listener, http_app)
+    axum::serve(listener, http_app)
 }
