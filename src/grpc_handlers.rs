@@ -1,7 +1,9 @@
 use crate::models::EmbeddingModel;
+use crate::EmbeddingModelRef;
 use candle_core::Tensor;
+use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tonic::transport::{Error, Server};
 use tonic::{Request, Response, Status};
 
 pub mod embedding_service {
@@ -35,16 +37,16 @@ pub mod embedding_service {
 }
 
 pub struct EmbeddingServiceImpl {
-    model: Arc<Mutex<EmbeddingModel>>,
+    model: EmbeddingModelRef,
 }
 
 impl EmbeddingServiceImpl {
-    pub fn new(model: Arc<Mutex<EmbeddingModel>>) -> Self {
+    pub fn new(model: EmbeddingModelRef) -> Self {
         Self { model }
     }
 }
 
-use embedding_service::embedding_service_server::EmbeddingService;
+use embedding_service::embedding_service_server::{EmbeddingService, EmbeddingServiceServer};
 use embedding_service::{EmbedBatchRequest, EmbedBatchResponse, EmbedRequest, Embedding};
 
 #[tonic::async_trait]
@@ -91,4 +93,20 @@ impl EmbeddingService for EmbeddingServiceImpl {
 
         Ok(Response::new(EmbedBatchResponse::from(embeddings_vec)))
     }
+}
+
+fn build_service(model: EmbeddingModelRef) -> EmbeddingServiceImpl {
+    // gRPC service
+    EmbeddingServiceImpl::new(Arc::clone(&model))
+}
+
+pub fn create_grpc_server(
+    port: SocketAddr,
+    model: EmbeddingModelRef,
+) -> impl std::future::Future<Output = Result<(), Error>> {
+    let grpc_service = build_service(model);
+
+    Server::builder()
+        .add_service(EmbeddingServiceServer::new(grpc_service))
+        .serve(port)
 }

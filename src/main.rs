@@ -1,108 +1,18 @@
-mod embedding_service;
+mod grpc_handlers;
+mod http_handlers;
 mod models;
 
-use candle_core::Tensor;
-use embedding_service::{
-    embedding_service::embedding_service_server::EmbeddingServiceServer, EmbeddingServiceImpl,
-};
+use grpc_handlers::create_grpc_server;
+use http_handlers::create_http_server;
 use models::{EmbeddingModel, ModelConfig};
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    routing::{get, post},
-    Json, Router,
-};
-use serde::{Deserialize, Serialize};
 use std::{future::IntoFuture, sync::Arc};
 use tokio::sync::Mutex;
-use tonic::transport::Server;
-use tracing::{info, warn};
+use tracing::warn;
 
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-#[derive(Serialize, Deserialize)]
-struct TextRequest {
-    text: String,
-}
-
-#[derive(Serialize, Deserialize)]
-struct EmbeddingResponse {
-    embedding: Vec<f32>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct TextBatchRequest {
-    texts: Vec<String>,
-    batch_size: Option<usize>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct EmbeddingBatchResponse {
-    embeddings: Vec<Vec<f32>>,
-}
-
-type EmbeddingService = Arc<Mutex<EmbeddingModel>>;
-
-async fn handle_embeddings(
-    State(model): State<EmbeddingService>,
-    Json(payload): Json<TextRequest>,
-) -> std::result::Result<Json<EmbeddingResponse>, StatusCode> {
-    info!("Received HTTP Embedding request: [{:?}]", payload.text);
-
-    let embeddings: Tensor;
-
-    {
-        let model = model.lock().await;
-        embeddings = model.encode(&payload.text).map_err(|e| {
-            tracing::error!("Error encoding text: {:?}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-    }
-
-    let embeddings_vec = embeddings.to_vec1().map_err(|e| {
-        tracing::error!("Error converting embeddings: {:?}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    Ok(Json(EmbeddingResponse {
-        embedding: embeddings_vec,
-    }))
-}
-
-async fn handle_batch_embeddings(
-    State(model): State<EmbeddingService>,
-    Json(payload): Json<TextBatchRequest>,
-) -> std::result::Result<Json<EmbeddingBatchResponse>, StatusCode> {
-    info!(
-        "Received Batch Embedding HTTP request: {:?}",
-        payload.texts.len()
-    );
-
-    let embeddings: Tensor;
-
-    {
-        let model = model.lock().await;
-        embeddings = model.batch_encode(&payload.texts, None).map_err(|e| {
-            tracing::error!("Error encoding text: {:?}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-    }
-
-    let embeddings_vec = embeddings.to_vec2().map_err(|e| {
-        tracing::error!("Error converting embeddings: {:?}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    Ok(Json(EmbeddingBatchResponse {
-        embeddings: embeddings_vec,
-    }))
-}
-
-async fn hello() -> &'static str {
-    info!("Received request!");
-    "Hello, World!"
-}
+pub type EmbeddingModelRef = Arc<Mutex<EmbeddingModel>>;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -117,21 +27,15 @@ async fn main() -> Result<()> {
     let model = models::EmbeddingModel::new(config);
     let model = Arc::new(Mutex::new(model));
 
-    let http_app = Router::new()
-        .route("/", get(hello))
-        .route("/embed", get(handle_embeddings).post(handle_embeddings))
-        .route("/batch_embed", post(handle_batch_embeddings))
-        .with_state(Arc::clone(&model));
-
-    // gRPC service
-    let grpc_service = EmbeddingServiceImpl::new(Arc::clone(&model));
-    let grpc_server = Server::builder()
-        .add_service(EmbeddingServiceServer::new(grpc_service))
-        .serve("0.0.0.0:50051".parse().unwrap());
-
     // run our app with hyper, listening globally on port 3000
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    let http_server = axum::serve(listener, http_app).into_future();
+
+    // HTTP service
+    let http_server = create_http_server(listener, Arc::clone(&model)).into_future();
+
+    // gRPC service
+    let port = "0.0.0.0:50051".parse().unwrap();
+    let grpc_server = create_grpc_server(port, Arc::clone(&model));
 
     let text = ["This is a test, i am testing the embedding model. I hope it works. Hello hello hello, ahhhhhhhh", "Another test, would you look at that!"];
     {
