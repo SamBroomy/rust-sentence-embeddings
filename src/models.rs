@@ -354,7 +354,18 @@ impl EmbeddingModel {
         S: AsRef<str>,
     {
         let start = std::time::Instant::now();
-        let batch_size = batch_size.into().unwrap_or(32);
+        let batch_size = match batch_size.into() {
+            Some(size) => {
+                if size > 0 {
+                    size
+                } else {
+                    32
+                }
+            }
+            None => 32,
+        };
+        assert!(batch_size > 0, "Batch size must be greater than 0");
+
         let sentences = sentences.into_iter().collect::<Vec<_>>();
 
         // Sort sentences by length
