@@ -16,7 +16,7 @@ use hf_hub::api::sync::{ApiBuilder, ApiRepo};
 use hf_hub::Repo;
 use serde::{Deserialize, Deserializer};
 use tokenizers::Tokenizer;
-use tracing::info;
+use tracing::{error, info};
 
 // https://huggingface.co/models?library=safetensors&other=bert&sort=trending
 
@@ -186,7 +186,7 @@ impl<M> ModelConfigBuilder<M, Unset> {
         let device = match Self::get_device(cpu) {
             Ok(device) => device,
             Err(e) => {
-                println!("Failed to get device: {}. Defaulting to CPU.", e);
+                error!("Failed to get device: {}. Defaulting to CPU.", e);
                 Device::Cpu
             }
         };
@@ -296,38 +296,9 @@ impl EmbeddingModel {
     pub fn new(model_config: ModelConfig) -> Self {
         let start = std::time::Instant::now();
         let model: EmbeddingModel = model_config.try_into().unwrap();
-        println!("Loaded model in {:?}", start.elapsed());
+        info!("Loaded model in {:?}", start.elapsed());
         model
     }
-
-    // pub fn encode<'s>(&self, input_text: impl Into<EncodeInput<'s>>) -> Result<Tensor> {
-    //     let start = std::time::Instant::now();
-    //     let tokens = self
-    //         .tokenizer
-    //         .encode(input_text, true)
-    //         .map_err(E::msg)?
-    //         .get_ids()
-    //         .to_vec();
-
-    //     let token_ids = Tensor::new(&tokens[..], self.device())?.unsqueeze(0)?;
-    //     let token_type_ids = token_ids.zeros_like()?;
-    //     println!("Encoded {:?}", start.elapsed());
-    //     let start = std::time::Instant::now();
-    //     let ys = self.model.forward(&token_ids, &token_type_ids)?;
-    //     let ft = start.elapsed();
-    //     println!("Forward {:?}", ft);
-    //     println!("Dimensions: {:?}", ys.shape());
-    //     println!("{ys}");
-    //     // Mean pooling to get a single embedding vector
-    //     let (_batch_size, seq_len, hidden_size) = ys.dims3()?;
-    //     let pooled = { ys.sum(1)? / (seq_len as f64) }?;
-    //     let pt = start.elapsed();
-    //     println!("Pooled {:?}", pt - ft);
-
-    //     println!("Pooled dimensions: {:?}", pooled.shape());
-    //     println!("Total time {:?}", start.elapsed());
-    //     Ok(pooled)
-    // }
 
     fn tokenize(&self, sentences: &[&str]) -> Result<Tensor> {
         let mut tokenizer = self.tokenizer.clone();
@@ -358,17 +329,25 @@ impl EmbeddingModel {
         { embeddings.sum(1)? / seq_len }.map_err(E::msg)
     }
 
-    fn normalize_l2(&self, embeddings: &Tensor) -> Result<Tensor> {
-        let norm = embeddings.sqr()?.sum_keepdim(1)?.sqrt()?;
-        { embeddings / norm }.map_err(E::msg)
+    #[tracing::instrument(skip(self))]
+    pub fn encode<S>(&self, sentence: S) -> Result<Tensor>
+    where
+        S: AsRef<str> + Debug,
+    {
+        let start = std::time::Instant::now();
+        let input_ids = self.tokenize(&[sentence.as_ref()])?;
+        let embeddings = self.forward(&input_ids)?.flatten_to(1)?;
+
+        info!("Encoded sentence in {:?}:\n{embeddings}", start.elapsed());
+
+        Ok(embeddings)
     }
 
     #[tracing::instrument(skip(self))]
-    pub fn encode<I, S>(
+    pub fn batch_encode<I, S>(
         &self,
         sentences: I,
         batch_size: impl Into<Option<usize>> + Debug,
-        normalize_embeddings: bool,
     ) -> Result<Tensor>
     where
         I: IntoIterator<Item = S> + Debug,
@@ -405,7 +384,7 @@ impl EmbeddingModel {
             let embeddings = self.forward(&input_ids)?;
             if batches > 1 {
                 info!(
-                    "Encoded batch of {:?} sentences in {:?}",
+                    "Batch Encoded {:?} sentences in {:?}",
                     batch.len(),
                     start.elapsed()
                 );
@@ -427,16 +406,20 @@ impl EmbeddingModel {
 
         let embeddings = Tensor::stack(&reordered_embeddings, 0)?;
 
-        println!(
-            "Encoded {:?} sentences in {:?}",
+        info!(
+            "Encoded {:?} sentences in {:?}:\n{embeddings}",
             sentences.len(),
             start.elapsed()
         );
 
-        if normalize_embeddings {
-            self.normalize_l2(&embeddings)
-        } else {
-            Ok(embeddings)
-        }
+        Ok(embeddings)
+    }
+
+    pub fn format_batch_embeddings(embeddings: Tensor) -> Result<Vec<Vec<f32>>> {
+        embeddings.to_vec2::<f32>().map_err(E::msg)
+    }
+
+    pub fn format_embeddings(embeddings: Tensor) -> Result<Vec<f32>> {
+        embeddings.to_vec1().map_err(E::msg)
     }
 }
