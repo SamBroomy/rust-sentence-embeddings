@@ -16,7 +16,7 @@ use hf_hub::api::sync::{ApiBuilder, ApiRepo};
 use hf_hub::Repo;
 use serde::{Deserialize, Deserializer};
 use tokenizers::Tokenizer;
-use tracing::{error, info};
+use tracing::{error, instrument, span};
 
 // https://huggingface.co/models?library=safetensors&other=bert&sort=trending
 
@@ -54,6 +54,7 @@ pub struct ModelConfig {
 }
 
 impl ModelConfig {
+    #[instrument(skip_all, name="Loading Tensors" level = "debug")]
     fn hub_load_safetensors(&self) -> Result<Vec<PathBuf>> {
         let index_result = self.repo.get("model.safetensors.index.json");
 
@@ -81,11 +82,15 @@ impl ModelConfig {
         }
     }
 
+    #[instrument(skip_all, name = "Loading Tokenizer", level = "debug")]
     fn get_tokenizer(&self) -> Result<Tokenizer> {
         let tokenizer_filename = self.repo.get("tokenizer.json")?;
 
         Ok(Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?)
     }
+
+    #[instrument(skip_all, name="Initialised Model" level = "warn")]
+
     fn initialise_model(&self) -> Result<EmbeddingModel> {
         // Load the model configuration
         let config = fs::read_to_string(self.repo.get("config.json")?)?;
@@ -219,8 +224,8 @@ impl ModelConfigBuilder<Set, Set> {
         self
     }
 
-    pub fn cache_dir(mut self, cache_dir: impl Into<PathBuf>) -> Self {
-        self.cache_dir = Some(cache_dir.into());
+    pub fn cache_dir(mut self, cache_dir: impl Into<Option<PathBuf>>) -> Self {
+        self.cache_dir = cache_dir.into();
         self
     }
 
@@ -294,12 +299,11 @@ impl EmbeddingModel {
     }
 
     pub fn new(model_config: ModelConfig) -> Self {
-        let start = std::time::Instant::now();
         let model: EmbeddingModel = model_config.try_into().unwrap();
-        info!("Loaded model in {:?}", start.elapsed());
         model
     }
 
+    #[instrument(skip_all, level = "debug")]
     fn tokenize(&self, sentences: &[&str]) -> Result<Tensor> {
         let mut tokenizer = self.tokenizer.clone();
         let tokenizer = tokenizer.with_padding(Some(tokenizers::PaddingParams {
@@ -319,6 +323,7 @@ impl EmbeddingModel {
         Ok(Tensor::new(input_ids, &self.device())?)
     }
 
+    #[instrument(skip_all, level = "debug")]
     fn forward(&self, input_ids: &Tensor) -> Result<Tensor> {
         let token_type_ids = input_ids.zeros_like()?;
 
@@ -329,21 +334,21 @@ impl EmbeddingModel {
         { embeddings.sum(1)? / seq_len }.map_err(E::msg)
     }
 
-    #[tracing::instrument(skip(self))]
+    #[instrument(skip(self), ret(Debug), name = "Encode Sentence")]
     pub fn encode<S>(&self, sentence: S) -> Result<Tensor>
     where
         S: AsRef<str> + Debug,
     {
-        let start = std::time::Instant::now();
         let input_ids = self.tokenize(&[sentence.as_ref()])?;
-        let embeddings = self.forward(&input_ids)?.flatten_to(1)?;
-
-        info!("Encoded sentence in {:?}:\n{embeddings}", start.elapsed());
-
-        Ok(embeddings)
+        Ok(self.forward(&input_ids)?.flatten_to(1)?)
     }
 
-    #[tracing::instrument(skip(self))]
+    #[instrument(
+        skip(self, sentences),
+        ret(Debug),
+        fields(number_of_sentences),
+        name = "Batch Encode"
+    )]
     pub fn batch_encode<I, S>(
         &self,
         sentences: I,
@@ -353,7 +358,6 @@ impl EmbeddingModel {
         I: IntoIterator<Item = S> + Debug,
         S: AsRef<str>,
     {
-        let start = std::time::Instant::now();
         let batch_size = match batch_size.into() {
             Some(size) => {
                 if size > 0 {
@@ -367,6 +371,7 @@ impl EmbeddingModel {
         assert!(batch_size > 0, "Batch size must be greater than 0");
 
         let sentences = sentences.into_iter().collect::<Vec<_>>();
+        tracing::Span::current().record("number_of_sentences", &sentences.len());
 
         // Sort sentences by length
         let mut sentence_lengths: Vec<_> = sentences
@@ -389,17 +394,17 @@ impl EmbeddingModel {
 
         let batches = (sentences_sorted.len() + batch_size - 1) / batch_size;
 
-        for batch in sentences_sorted.chunks(batch_size) {
-            let start = std::time::Instant::now();
+        for (idx, batch) in sentences_sorted.chunks(batch_size).enumerate() {
+            let batch_span = span!(
+                tracing::Level::DEBUG,
+                "Encoding Batch",
+                idx = idx,
+                batches = batches,
+                size = batch.len()
+            );
+            let _enter = batch_span.enter();
             let input_ids = self.tokenize(batch)?;
             let embeddings = self.forward(&input_ids)?;
-            if batches > 1 {
-                info!(
-                    "Batch Encoded {:?} sentences in {:?}",
-                    batch.len(),
-                    start.elapsed()
-                );
-            }
             all_embeddings.push(embeddings);
         }
 
@@ -415,21 +420,15 @@ impl EmbeddingModel {
             reordered_embeddings[idx] = embeddings.get(i)?;
         }
 
-        let embeddings = Tensor::stack(&reordered_embeddings, 0)?;
-
-        info!(
-            "Encoded {:?} sentences in {:?}:\n{embeddings}",
-            sentences.len(),
-            start.elapsed()
-        );
-
-        Ok(embeddings)
+        Ok(Tensor::stack(&reordered_embeddings, 0)?)
     }
 
+    #[instrument(skip_all)]
     pub fn format_batch_embeddings(embeddings: Tensor) -> Result<Vec<Vec<f32>>> {
         embeddings.to_vec2::<f32>().map_err(E::msg)
     }
 
+    #[instrument(skip_all)]
     pub fn format_embeddings(embeddings: Tensor) -> Result<Vec<f32>> {
         embeddings.to_vec1().map_err(E::msg)
     }

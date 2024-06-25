@@ -52,6 +52,7 @@ use embedding_service::{EmbedBatchRequest, EmbedBatchResponse, EmbedRequest, Emb
 
 #[tonic::async_trait]
 impl EmbeddingService for EmbeddingServiceImpl {
+    #[instrument(skip_all, name = "gRPC Embed")]
     async fn embed(&self, request: Request<EmbedRequest>) -> Result<Response<Embedding>, Status> {
         let request = request.into_inner();
         let text = request.text;
@@ -68,6 +69,7 @@ impl EmbeddingService for EmbeddingServiceImpl {
         Ok(Response::new(Embedding::from(embedding_vec)))
     }
 
+    #[instrument(skip_all, name = "gRPC Embed Batch")]
     async fn embed_batch(
         &self,
         request: Request<EmbedBatchRequest>,

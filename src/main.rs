@@ -6,6 +6,7 @@ use server::run_service;
 use server::EmbeddingModelRef;
 
 use clap::Parser;
+use std::path::PathBuf;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::sync::Mutex;
 use tracing::info;
@@ -22,20 +23,30 @@ struct Args {
     #[arg(short, long, default_value_t = false)]
     device: bool,
 
-    #[arg(short, long, default_value_t = true)]
-    progress_bar: bool,
-
     #[arg(long)]
     http_port: Option<u16>,
 
     #[arg(long)]
     grpc_port: Option<u16>,
+
+    #[arg(short, long, default_value_t = true)]
+    progress_bar: bool,
+
+    #[arg(short, long, default_value_t = false)]
+    fast: bool,
+
+    #[arg(short, long)]
+    token: Option<String>,
+
+    #[arg(short, long)]
+    cache_dir: Option<PathBuf>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_span_events(FmtSpan::CLOSE)
+        .with_max_level(tracing::Level::DEBUG)
         .init();
 
     let args = Args::parse();
@@ -44,6 +55,9 @@ async fn main() -> Result<()> {
         .model_id(&args.model_id)
         .device(args.device)
         .progress_bar(args.progress_bar)
+        .token(args.token)
+        .fast(args.fast)
+        .cache_dir(args.cache_dir)
         .build();
 
     let http_port: Option<SocketAddr> = args
