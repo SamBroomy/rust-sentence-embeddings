@@ -1,77 +1,100 @@
+mod embedding_service;
 mod models;
 
-use std::sync::Arc;
+use candle_core::Tensor;
+use embedding_service::{
+    embedding_service::embedding_service_server::EmbeddingServiceServer, EmbeddingServiceImpl,
+};
+use models::{EmbeddingModel, ModelConfig};
 
 use axum::{
     extract::State,
     http::StatusCode,
-    response::IntoResponse,
     routing::{get, post},
-    Extension, Json, Router,
+    Json, Router,
 };
-use models::{EmbeddingModel, ModelConfig};
 use serde::{Deserialize, Serialize};
+use std::{future::IntoFuture, sync::Arc};
 use tokio::sync::Mutex;
-use tracing::info;
+use tonic::transport::Server;
+use tracing::{info, warn};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Serialize, Deserialize)]
 struct TextRequest {
-    texts: Vec<String>,
+    text: String,
 }
 
 #[derive(Serialize, Deserialize)]
-struct EmbeddingsResponse {
+struct EmbeddingResponse {
+    embedding: Vec<f32>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TextBatchRequest {
+    texts: Vec<String>,
+    batch_size: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+struct EmbeddingBatchResponse {
     embeddings: Vec<Vec<f32>>,
 }
 
-// async fn handle_embeddings(
-//     Json(payload): Json<TextRequest>,
-//     Extension(model): Extension<Arc<Mutex<EmbeddingModel>>>,
-// ) -> impl IntoResponse {
-//     match handle_embeddings_inner(payload, model).await {
-//         Ok(response) => (StatusCode::OK, response),
-//         Err(status) => (status, Json(EmbeddingsResponse { embeddings: vec![] })),
-//     }
-//     .into_response()
-// }
-
-// async fn handle_embeddings_inner(
-//     payload: TextRequest,
-//     model: Arc<Mutex<EmbeddingModel>>,
-// ) -> std::result::Result<Json<EmbeddingsResponse>, StatusCode> {
-//     let model = model.lock().await; // Lock the model for exclusive access
-//     let embeddings = model.encode(&payload.texts, None, false).map_err(|e| {
-//         tracing::error!("Error encoding text: {:?}", e);
-//         StatusCode::INTERNAL_SERVER_ERROR
-//     })?;
-//     Ok(Json(EmbeddingsResponse {
-//         embeddings: embeddings.to_vec2::<f32>().map_err(|e| {
-//             tracing::error!("Error converting embeddings: {:?}", e);
-//             StatusCode::INTERNAL_SERVER_ERROR
-//         })?,
-//     }))
-// }
+type EmbeddingService = Arc<Mutex<EmbeddingModel>>;
 
 async fn handle_embeddings(
-    State(model): State<Arc<Mutex<EmbeddingModel>>>,
+    State(model): State<EmbeddingService>,
     Json(payload): Json<TextRequest>,
-) -> std::result::Result<Json<EmbeddingsResponse>, StatusCode> {
-    info!("Received request: {:?}", payload.texts.len());
+) -> std::result::Result<Json<EmbeddingResponse>, StatusCode> {
+    info!("Received HTTP Embedding request: [{:?}]", payload.text);
 
-    let model = model.lock().await;
-    let embeddings = model.encode(&payload.texts, None, false).map_err(|e| {
-        tracing::error!("Error encoding text: {:?}", e);
+    let embeddings: Tensor;
+
+    {
+        let model = model.lock().await;
+        embeddings = model.encode(&payload.text).map_err(|e| {
+            tracing::error!("Error encoding text: {:?}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    }
+
+    let embeddings_vec = embeddings.to_vec1().map_err(|e| {
+        tracing::error!("Error converting embeddings: {:?}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+
+    Ok(Json(EmbeddingResponse {
+        embedding: embeddings_vec,
+    }))
+}
+
+async fn handle_batch_embeddings(
+    State(model): State<EmbeddingService>,
+    Json(payload): Json<TextBatchRequest>,
+) -> std::result::Result<Json<EmbeddingBatchResponse>, StatusCode> {
+    info!(
+        "Received Batch Embedding HTTP request: {:?}",
+        payload.texts.len()
+    );
+
+    let embeddings: Tensor;
+
+    {
+        let model = model.lock().await;
+        embeddings = model.batch_encode(&payload.texts, None).map_err(|e| {
+            tracing::error!("Error encoding text: {:?}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    }
 
     let embeddings_vec = embeddings.to_vec2().map_err(|e| {
         tracing::error!("Error converting embeddings: {:?}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    Ok(Json(EmbeddingsResponse {
+    Ok(Json(EmbeddingBatchResponse {
         embeddings: embeddings_vec,
     }))
 }
@@ -83,7 +106,6 @@ async fn hello() -> &'static str {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // initialize tracing
     tracing_subscriber::fmt::init();
 
     let model_name = "mixedbread-ai/mxbai-embed-large-v1";
@@ -95,22 +117,40 @@ async fn main() -> Result<()> {
     let model = models::EmbeddingModel::new(config);
     let model = Arc::new(Mutex::new(model));
 
-    let app = Router::new()
+    let http_app = Router::new()
         .route("/", get(hello))
-        .route("/embed", post(handle_embeddings))
-        .with_state(model);
+        .route("/embed", get(handle_embeddings).post(handle_embeddings))
+        .route("/batch_embed", post(handle_batch_embeddings))
+        .with_state(Arc::clone(&model));
+
+    // gRPC service
+    let grpc_service = EmbeddingServiceImpl::new(Arc::clone(&model));
+    let grpc_server = Server::builder()
+        .add_service(EmbeddingServiceServer::new(grpc_service))
+        .serve("0.0.0.0:50051".parse().unwrap());
 
     // run our app with hyper, listening globally on port 3000
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    let http_server = axum::serve(listener, http_app).into_future();
 
-    //let text = ["This is a test, i am testing the embedding model. I hope it works. Hello hello hello, ahhhhhhhh", "Another test, would you look at that!"];
+    let text = ["This is a test, i am testing the embedding model. I hope it works. Hello hello hello, ahhhhhhhh", "Another test, would you look at that!"];
+    {
+        let embeddings = model.lock().await.batch_encode(&text, None)?;
 
-    //println!("Encoding text: {:?}", text);
+        let _ = embeddings.to_vec2::<f32>()?;
+    }
+    {
+        let embeddings = model.lock().await.encode("This is a test, i am testing the embedding model. I hope it works. Hello hello hello, ahhhhhhhh")?;
+        let _ = embeddings.to_vec1::<f32>()?;
+    }
 
-    //let embeddings = model.lock().await.encode(&text, None, false)?;
-    //println!("Embeddings: {}", embeddings);
-    //let embeddings = embeddings.to_vec2::<f32>()?;
+    warn!("Starting servers...");
+
+    // Run both servers concurrently
+    tokio::select! {
+        _ = grpc_server => warn!("gRPC server terminated"),
+        _ = http_server => warn!("HTTP server terminated"),
+    }
 
     Ok(())
 }

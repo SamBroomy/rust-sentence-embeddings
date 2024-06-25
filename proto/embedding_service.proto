@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package embedding;
+
+service EmbeddingService {
+  rpc Embed (EmbedRequest) returns (Embedding);
+  rpc EmbedBatch (EmbedBatchRequest) returns (EmbedBatchResponse);
+}
+
+message EmbedRequest {
+  string text = 1;
+}
+
+message Embedding {
+  repeated float values = 1;
+}
+
+
+message EmbedBatchRequest {
+  repeated string texts = 1;
+  int32 batch_size = 2;
+}
+
+message EmbedBatchResponse {
+  repeated Embedding embeddings = 1;
+}
