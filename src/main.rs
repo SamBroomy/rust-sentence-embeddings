@@ -1,60 +1,84 @@
-mod grpc_handlers;
-mod http_handlers;
 mod models;
+mod server;
 
-use grpc_handlers::create_grpc_server;
-use http_handlers::create_http_server;
 use models::{EmbeddingModel, ModelConfig};
+use server::run_service;
+use server::EmbeddingModelRef;
 
-use std::{future::IntoFuture, sync::Arc};
+use clap::Parser;
+use std::{net::SocketAddr, sync::Arc};
 use tokio::sync::Mutex;
-use tracing::warn;
+use tracing::info;
+use tracing_subscriber::fmt::format::FmtSpan;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-pub type EmbeddingModelRef = Arc<Mutex<EmbeddingModel>>;
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    #[arg(short, long, default_value = "mixedbread-ai/mxbai-embed-large-v1")]
+    model_id: String,
+
+    #[arg(short, long, default_value_t = false)]
+    device: bool,
+
+    #[arg(short, long, default_value_t = true)]
+    progress_bar: bool,
+
+    #[arg(long)]
+    http_port: Option<u16>,
+
+    #[arg(long)]
+    grpc_port: Option<u16>,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_span_events(FmtSpan::CLOSE)
+        .init();
 
-    let model_name = "mixedbread-ai/mxbai-embed-large-v1";
+    let args = Args::parse();
+
     let config = ModelConfig::builder()
-        .model_id(model_name)
-        .device(false)
-        .progress_bar(true)
+        .model_id(&args.model_id)
+        .device(args.device)
+        .progress_bar(args.progress_bar)
         .build();
+
+    let http_port: Option<SocketAddr> = args
+        .http_port
+        .map(|port| format!("0.0.0.0:{}", port).parse().unwrap());
+
+    let grpc_port: Option<SocketAddr> = args
+        .http_port
+        .map(|port| format!("0.0.0.0:{}", port).parse().unwrap());
+
     let model = models::EmbeddingModel::new(config);
     let model = Arc::new(Mutex::new(model));
 
-    // run our app with hyper, listening globally on port 3000
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    test_model(&model).await?;
 
-    // HTTP service
-    let http_server = create_http_server(listener, Arc::clone(&model)).into_future();
+    run_service(http_port, grpc_port, model).await?;
 
-    // gRPC service
-    let port = "0.0.0.0:50051".parse().unwrap();
-    let grpc_server = create_grpc_server(port, Arc::clone(&model));
+    Ok(())
+}
 
-    let text = ["This is a test, i am testing the embedding model. I hope it works. Hello hello hello, ahhhhhhhh", "Another test, would you look at that!"];
+async fn test_model(model: &EmbeddingModelRef) -> Result<()> {
+    let text = [
+        "This is a test, i am testing the embedding model. I hope it works. Hello hello hello, ahhhhhhhh",
+        "Another test, would you look at that!",
+    ];
+
     {
         let embeddings = model.lock().await.batch_encode(&text, None)?;
-
         let _ = embeddings.to_vec2::<f32>()?;
     }
     {
-        let embeddings = model.lock().await.encode("This is a test, i am testing the embedding model. I hope it works. Hello hello hello, ahhhhhhhh")?;
+        let embeddings = model.lock().await.encode(&text[0])?;
         let _ = embeddings.to_vec1::<f32>()?;
     }
 
-    warn!("Starting servers...");
-
-    // Run both servers concurrently
-    tokio::select! {
-        _ = grpc_server => warn!("gRPC server terminated"),
-        _ = http_server => warn!("HTTP server terminated"),
-    }
-
+    info!("Embedding model test successful");
     Ok(())
 }

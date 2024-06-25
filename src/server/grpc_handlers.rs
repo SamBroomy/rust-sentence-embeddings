@@ -1,5 +1,6 @@
 use crate::models::EmbeddingModel;
 use crate::EmbeddingModelRef;
+
 use candle_core::Tensor;
 use std::net::SocketAddr;
 use std::sync::Arc;
