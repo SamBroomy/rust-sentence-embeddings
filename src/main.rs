@@ -34,7 +34,7 @@ struct EmbeddingResponse {
 #[derive(Serialize, Deserialize)]
 struct TextBatchRequest {
     texts: Vec<String>,
-    batch_size: usize,
+    batch_size: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize)]

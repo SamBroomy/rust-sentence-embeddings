@@ -1,6 +1,9 @@
-/// This is an example of a gRPC client that sends a request to the embedding service. Ensure that the service is running before running this client.
+/// This is an example of a gRPC client that sends a batch request to the embedding service. Ensure that the service is running before running this client.
 /// ```sh
-/// cargo run --example grpc_client```
+/// cargo run```
+/// In new terminal window
+/// ```sh
+/// cargo run --example grpc_client_batch```
 use tonic::Request;
 
 pub mod embedding_service {
