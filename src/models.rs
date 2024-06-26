@@ -1,9 +1,12 @@
 use std::collections::BTreeSet;
 
+use futures::future::{self, Future};
+use futures::FutureExt;
 use std::fmt::Debug;
 use std::fs::{self, File};
 use std::marker::PhantomData;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Error as E;
 use anyhow::Result;
@@ -14,9 +17,10 @@ use candle_transformers::models::bert::{BertModel, Config, HiddenAct, DTYPE};
 
 use hf_hub::api::sync::{ApiBuilder, ApiRepo};
 use hf_hub::Repo;
-use serde::{Deserialize, Deserializer};
+use serde::{ Deserialize, Deserializer};
 use tokenizers::Tokenizer;
-use tracing::{error, instrument, span};
+use tokio::task;
+use tracing::{debug, error, instrument, span};
 
 // https://huggingface.co/models?library=safetensors&other=bert&sort=trending
 
@@ -298,6 +302,46 @@ impl EmbeddingModel {
         &self.model.device
     }
 
+    #[instrument(skip_all, level = "debug")]
+    pub fn to_cpu_async(tensor: Tensor) -> impl Future<Output = Result<Tensor>> {
+        let cpu_device = Device::Cpu;
+        async move {
+            if tensor.device().same_device(&cpu_device) {
+                debug!("Tensor already on CPU");
+                Ok(tensor)
+            } else {
+                // Spawn a blocking task for the CPU transfer
+                task::spawn_blocking(move || tensor.to_device(&cpu_device))
+                    .await
+                    .map_err(|e| E::msg(format!("Task join error: {}", e)))?
+                    .map_err(E::msg)
+            }
+        }
+    }
+
+    #[instrument(skip_all, level = "debug")]
+    pub fn to_cpu_async_batch(tensors: Vec<Tensor>) -> impl Future<Output = Result<Vec<Tensor>>> {
+        async move {
+            let cpu_device = Device::Cpu;
+            let futures = tensors.into_iter().map(|tensor| {
+                if tensor.device().same_device(&cpu_device) {
+                    future::ready(Ok(tensor)).left_future()
+                } else {
+                    task::spawn_blocking({
+                        let cpu_device = cpu_device.clone();
+                        move || tensor.to_device(&cpu_device)
+                    })
+                    .map(|r| {
+                        r.map_err(|e| E::msg(format!("Task join error: {}", e)))
+                            .and_then(|t| t.map_err(E::msg))
+                    })
+                    .right_future()
+                }
+            });
+            future::try_join_all(futures).await
+        }
+    }
+
     pub fn new(model_config: ModelConfig) -> Self {
         let model: EmbeddingModel = model_config.try_into().unwrap();
         model
@@ -431,5 +475,19 @@ impl EmbeddingModel {
     #[instrument(skip_all)]
     pub fn format_embeddings(embeddings: Tensor) -> Result<Vec<f32>> {
         embeddings.to_vec1().map_err(E::msg)
+    }
+
+    #[instrument(skip_all)]
+    pub async fn format_batch_embeddings_async(embeddings: Arc<Tensor>) -> Result<Vec<Vec<f32>>> {
+        task::spawn_blocking(move || embeddings.to_vec2::<f32>().map_err(E::msg))
+            .await
+            .map_err(|e| E::msg(format!("Task join error: {}", e)))?
+    }
+
+    #[instrument(skip_all)]
+    pub async fn format_embeddings_async(embeddings: Arc<Tensor>) -> Result<Vec<f32>> {
+        task::spawn_blocking(move || embeddings.to_vec1().map_err(E::msg))
+            .await
+            .map_err(|e| E::msg(format!("Task join error: {}", e)))?
     }
 }

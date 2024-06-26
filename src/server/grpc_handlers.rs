@@ -5,7 +5,9 @@ use candle_core::Tensor;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tonic::transport::{Error, Server};
-use tonic::{Request, Response, Status};
+use tonic::{IntoRequest, Request, Response, Status};
+use tracing::{debug, instrument, span};
+use tracing_subscriber::field::debug;
 
 pub mod embedding_service {
     tonic::include_proto!("embedding");
@@ -63,10 +65,20 @@ impl EmbeddingService for EmbeddingServiceImpl {
                 .encode(text)
                 .map_err(|e| Status::internal(format!("Error encoding text: {:?}", e)))?;
         }
-        let embedding_vec = EmbeddingModel::format_embeddings(embedding)
-            .map_err(|e| Status::internal(format!("Error formatting embeddings: {:?}", e)))?;
 
-        Ok(Response::new(Embedding::from(embedding_vec)))
+        let cpu_span = span!(tracing::Level::DEBUG, "Embedding to CPU");
+        let _cpu_guard = cpu_span.enter();
+
+        let cpu_embedding = EmbeddingModel::to_cpu_async(embedding)
+            .await
+            .map_err(|e| Status::internal(format!("Error moving embeddings to CPU: {:?}", e)))?;
+
+        let embedding_output = EmbeddingModel::format_embeddings_async(Arc::new(cpu_embedding))
+            .await
+            .map_err(|e| Status::internal(format!("Error formatting embeddings: {:?}", e)))?;
+        drop(_cpu_guard);
+
+        Ok(Response::new(Embedding::from(embedding_output)))
     }
 
     #[instrument(skip_all, name = "gRPC Embed Batch")]
@@ -91,10 +103,33 @@ impl EmbeddingService for EmbeddingServiceImpl {
                 .batch_encode(texts, batch_size)
                 .map_err(|e| Status::internal(format!("Error encoding batch text: {:?}", e)))?;
         }
-        let embeddings_vec = EmbeddingModel::format_batch_embeddings(embeddings)
-            .map_err(|e| Status::internal(format!("Error formatting batch embeddings: {:?}", e)))?;
 
-        Ok(Response::new(EmbedBatchResponse::from(embeddings_vec)))
+        let cpu_span = span!(tracing::Level::DEBUG, "Embedding to CPU");
+        let _cpu_guard = cpu_span.enter();
+
+        debug!("embeddings: {:?}", embeddings);
+
+        let chunks = embeddings.dim(0).unwrap() as usize;
+        debug!("chunks: {}", chunks);
+
+        let embeddings = embeddings.chunk(chunks, 0).unwrap();
+
+        debug!("embeddings: {:?}", embeddings);
+
+        let embeddings = EmbeddingModel::to_cpu_async_batch(embeddings)
+            .await
+            .map_err(|e| Status::internal(format!("Error moving embeddings to CPU: {:?}", e)))?;
+
+        let embeddings_output = embeddings
+            .into_iter()
+            .map(|t| t.to_vec1::<f32>().unwrap())
+            .collect::<Vec<_>>();
+
+        // let embeddings_output = EmbeddingModel::format_batch_embeddings_async(Arc::new(embeddings))
+        //     .map_err(|e| Status::internal(format!("Error formatting batch embeddings: {:?}", e)))?;
+        // drop(_cpu_guard);
+
+        Ok(Response::new(EmbedBatchResponse::from(embeddings_output)))
     }
 }
 
