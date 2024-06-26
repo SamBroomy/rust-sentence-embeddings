@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::sync::Mutex;
 use tracing::info;
+use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -40,16 +41,30 @@ struct Args {
 
     #[arg(short, long)]
     cache_dir: Option<PathBuf>,
+
+    #[arg(short, long, default_value = "INFO")]
+    level: String,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = Args::parse();
+
+    let level = match args.level.to_lowercase().as_str() {
+        "debug" => Level::DEBUG,
+        "info" => Level::INFO,
+        "warn" => Level::WARN,
+        "error" => Level::ERROR,
+        _ => {
+            eprintln!("Invalid log level: {}", args.level);
+            std::process::exit(1);
+        }
+    };
+
     tracing_subscriber::fmt()
         .with_span_events(FmtSpan::CLOSE)
-        .with_max_level(tracing::Level::DEBUG)
+        .with_max_level(level)
         .init();
-
-    let args = Args::parse();
 
     let config = ModelConfig::builder()
         .model_id(&args.model_id)
