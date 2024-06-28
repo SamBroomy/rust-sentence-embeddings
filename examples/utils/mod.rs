@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 pub fn read_in_batch_examples() -> Vec<String> {
     let file = std::fs::read_to_string("./examples/data/batch_examples.txt").unwrap();
     let examples: Vec<String> = file.lines().map(|s| s.to_string()).collect();

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, sync::Arc};
 use tokio::runtime::Handle;
 use tokio::task;
-use tracing::info;
+use tracing::{info, instrument};
 
 #[derive(Serialize, Deserialize)]
 struct TextRequest {
@@ -35,6 +35,7 @@ struct EmbeddingBatchResponse {
     embeddings: Vec<Vec<f32>>,
 }
 
+#[instrument(skip_all, name = "HTTP Embedding")]
 async fn handle_embeddings(
     State(model): State<EmbeddingModelRef>,
     Json(payload): Json<TextRequest>,
@@ -61,6 +62,7 @@ async fn handle_embeddings(
     }))
 }
 
+#[instrument(skip_all, name = "HTTP Batch Embedding")]
 async fn handle_batch_embeddings(
     State(model): State<EmbeddingModelRef>,
     Json(payload): Json<TextBatchRequest>,
@@ -107,7 +109,7 @@ pub fn create_http_server(port: SocketAddr, model: EmbeddingModelRef) -> Serve<R
     // Don't want to colour the function. No reason this cant be a blocking call.
 
     // Use a blocking call to create the runtime and bind the listener.
-    let listener = task::block_in_place(move || {
+    let listener = task::block_in_place(|| {
         Handle::current()
             .block_on(async move { tokio::net::TcpListener::bind(port).await.unwrap() })
     });

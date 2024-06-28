@@ -39,6 +39,8 @@ The microservice integrates machine learning models for sentence embeddings, all
 
 - [ ] Add more tests
 
+- [ ] Add feature flags for different device support (GPU, Metal)
+
 ## Getting Started
 
 To get the microservice running locally:

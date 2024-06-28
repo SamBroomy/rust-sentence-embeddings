@@ -48,7 +48,12 @@ struct Args {
     )]
     progress_bar: bool,
 
-    #[arg(short, long, default_value_t = false, help = "Use fast tokenization")]
+    #[arg(
+        short,
+        long,
+        default_value_t = false,
+        help = "Use GeluApproximate activation function for faster inference."
+    )]
     fast: bool,
 
     #[arg(short, long)]
@@ -65,11 +70,11 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    let level = match args.level.to_lowercase().as_str() {
-        "debug" => Level::DEBUG,
-        "info" => Level::INFO,
-        "warn" => Level::WARN,
-        "error" => Level::ERROR,
+    let level = match args.level.to_uppercase().as_str() {
+        "DEBUG" => Level::DEBUG,
+        "INFO" => Level::INFO,
+        "WARN" => Level::WARN,
+        "ERROR" => Level::ERROR,
         _ => {
             eprintln!("Invalid log level: {}", args.level);
             std::process::exit(1);
