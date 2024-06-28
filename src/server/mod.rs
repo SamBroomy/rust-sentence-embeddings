@@ -25,7 +25,7 @@ async fn run_grpc_server(model: EmbeddingModelRef, port: SocketAddr) -> Result<(
     warn!("Starting gRPC server...");
     let server = create_grpc_server(port, model);
     info!("gRPC server listening on: {:}", port);
-    Ok(server.await?)
+    server.await.map_err(Into::into)
 }
 
 async fn run_both_servers(

@@ -1,6 +1,8 @@
+mod error;
 mod models;
 mod server;
 
+use error::Result;
 use models::{EmbeddingModel, ModelConfig};
 use server::run_service;
 use server::EmbeddingModelRef;
@@ -13,27 +15,40 @@ use tracing::info;
 use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
 
-pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
-
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    #[arg(short, long, default_value = "mixedbread-ai/mxbai-embed-large-v1")]
+    #[arg(
+        short,
+        long,
+        default_value = "mixedbread-ai/mxbai-embed-large-v1",
+        help = "The full huggingface model id"
+    )]
     model_id: String,
 
-    #[arg(short, long, default_value_t = false)]
+    #[arg(
+        short,
+        long,
+        default_value_t = true,
+        help = "Use a device for inference (e.g. GPU) or not (CPU). Default to cpu if device not available."
+    )]
     device: bool,
 
-    #[arg(long)]
+    #[arg(long, help = "HTTP port to listen on")]
     http_port: Option<u16>,
 
-    #[arg(long)]
+    #[arg(long, help = "gRPC port to listen on")]
     grpc_port: Option<u16>,
 
-    #[arg(short, long, default_value_t = true)]
+    #[arg(
+        short,
+        long,
+        default_value_t = true,
+        help = "Show progress bar for downloads"
+    )]
     progress_bar: bool,
 
-    #[arg(short, long, default_value_t = false)]
+    #[arg(short, long, default_value_t = false, help = "Use fast tokenization")]
     fast: bool,
 
     #[arg(short, long)]
@@ -100,12 +115,12 @@ async fn test_model(model: &EmbeddingModelRef) -> Result<()> {
     ];
 
     {
-        let embeddings = model.lock().await.batch_encode(&text, None)?;
-        let _ = embeddings.to_vec2::<f32>()?;
+        let embeddings = model.lock().await.encode(text[0])?;
+        let _ = embeddings.to_vec1::<f32>()?;
     }
     {
-        let embeddings = model.lock().await.encode(&text[0])?;
-        let _ = embeddings.to_vec1::<f32>()?;
+        let embeddings = model.lock().await.batch_encode(text, None)?;
+        let _ = embeddings.to_vec2::<f32>()?;
     }
 
     info!("Embedding model test successful");
