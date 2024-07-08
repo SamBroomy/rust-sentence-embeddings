@@ -16,7 +16,7 @@ use hf_hub::api::sync::{ApiBuilder, ApiRepo};
 use hf_hub::Repo;
 use serde::{de, Deserialize, Deserializer};
 use tokenizers::Tokenizer;
-use tracing::{error, instrument, span};
+use tracing::{error, info, instrument, span, warn};
 
 // https://huggingface.co/models?library=safetensors&other=bert&sort=trending
 
@@ -258,23 +258,24 @@ impl ModelConfigBuilder<Set, Set> {
 impl<M, D> ModelConfigBuilder<M, D> {
     fn get_device(use_device: bool) -> Result<Device> {
         if !use_device {
+            info!("Running on CPU.");
             Ok(Device::Cpu)
         } else if cuda_is_available() {
+            info!("CUDA is available, using GPU.");
             Ok(Device::new_cuda(0)?)
         } else if metal_is_available() {
+            info!("Metal is available, using GPU.");
             Ok(Device::new_metal(0)?)
         } else {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             {
-                println!(
+                warn!(
                     "Running on CPU, to run on GPU(metal), build this example with `--features metal`"
                 );
             }
             #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
             {
-                println!(
-                    "Running on CPU, to run on GPU, build this example with `--features cuda`"
-                );
+                warn!("Running on CPU, to run on GPU, build this example with `--features cuda`");
             }
             Ok(Device::Cpu)
         }
