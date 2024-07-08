@@ -3,7 +3,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 // Wtf is going on here, remove this and it thinks its dead code but its not is it?
 #[allow(dead_code)]
-// I dont understand why the Error types within the Error enum are giving me this dead code warnning? I think it could be something to do with Deserialize on the struct Weightmaps or the deserialize_weight_map function. But i literally have no clue. Any help with this would be appreciated.
+// I dont understand why the Error types within the Error enum are giving me this dead code warning? I think it could be something to do with Deserialize on the struct Weightmaps or the deserialize_weight_map function. But i literally have no clue. Any help with this would be appreciated.
 #[derive(Debug, derive_more::From)]
 pub enum Error {
     SerdeDe(String),

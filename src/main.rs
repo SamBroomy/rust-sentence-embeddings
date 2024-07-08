@@ -34,11 +34,17 @@ struct Args {
     )]
     device: bool,
 
-    #[arg(long, help = "HTTP port to listen on")]
-    http_port: Option<u16>,
+    #[arg(
+        long,
+        help = "HTTP port to listen on. Uses default port 3000 if flag is present without value."
+    )]
+    http_port: Option<Option<u16>>,
 
-    #[arg(long, help = "gRPC port to listen on")]
-    grpc_port: Option<u16>,
+    #[arg(
+        long,
+        help = "gRPC port to listen on. Uses default port 50051 if flag is present without value."
+    )]
+    grpc_port: Option<Option<u16>>,
 
     #[arg(
         short,
@@ -95,13 +101,17 @@ async fn main() -> Result<()> {
         .cache_dir(args.cache_dir)
         .build();
 
-    let http_port: Option<SocketAddr> = args
-        .http_port
-        .map(|port| format!("0.0.0.0:{}", port).parse().unwrap());
+    let http_port: Option<SocketAddr> = match args.http_port {
+        Some(Some(port)) => Some(format!("0.0.0.0:{}", port).parse().unwrap()),
+        Some(None) => Some("0.0.0.0:3000".parse().unwrap()),
+        None => None,
+    };
 
-    let grpc_port: Option<SocketAddr> = args
-        .http_port
-        .map(|port| format!("0.0.0.0:{}", port).parse().unwrap());
+    let grpc_port: Option<SocketAddr> = match args.grpc_port {
+        Some(Some(port)) => Some(format!("0.0.0.0:{}", port).parse().unwrap()),
+        Some(None) => Some("0.0.0.0:50051".parse().unwrap()),
+        None => None,
+    };
 
     let model = models::EmbeddingModel::new(config);
     let model = Arc::new(Mutex::new(model));

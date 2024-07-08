@@ -1,3 +1,5 @@
+use crate::Result;
+
 use std::collections::BTreeSet;
 
 use std::fmt::Debug;
@@ -5,8 +7,6 @@ use std::fs::{self, File};
 use std::marker::PhantomData;
 use std::path::PathBuf;
 
-use anyhow::Error as E;
-use anyhow::Result;
 use candle_core::utils::{cuda_is_available, metal_is_available};
 use candle_core::{DType, Device, Tensor};
 use candle_nn::var_builder::VarBuilderArgs;
@@ -14,7 +14,7 @@ use candle_transformers::models::bert::{BertModel, Config, HiddenAct, DTYPE};
 
 use hf_hub::api::sync::{ApiBuilder, ApiRepo};
 use hf_hub::Repo;
-use serde::{Deserialize, Deserializer};
+use serde::{de, Deserialize, Deserializer};
 use tokenizers::Tokenizer;
 use tracing::{error, instrument, span};
 
@@ -26,12 +26,23 @@ struct Weightmaps {
     weight_map: BTreeSet<String>,
 }
 // Custom deserializer for the weight_map to directly extract values into a HashSet
-fn deserialize_weight_map<'de, D>(deserializer: D) -> Result<BTreeSet<String>, D::Error>
+fn deserialize_weight_map<'de, D>(
+    deserializer: D,
+) -> std::result::Result<BTreeSet<String>, D::Error>
 where
     D: Deserializer<'de>,
 {
     let map = serde_json::Value::deserialize(deserializer)?;
     match map {
+        serde_json::Value::Array(arr) => {
+            let mut sorted_set = BTreeSet::new();
+            for value in arr {
+                if let Some(v) = value.as_str() {
+                    sorted_set.insert(v.to_string());
+                }
+            }
+            Ok(sorted_set)
+        }
         serde_json::Value::Object(obj) => {
             let mut sorted_set = BTreeSet::new();
             for value in obj.values() {
@@ -41,9 +52,7 @@ where
             }
             Ok(sorted_set)
         }
-        _ => Err(serde::de::Error::custom(
-            "Expected an object for weight_map",
-        )),
+        _ => Err(de::Error::custom("Expected an object for weight_map")),
     }
 }
 
@@ -74,10 +83,8 @@ impl ModelConfig {
             }
             Err(_) => {
                 // If index file doesn't exist, try to load single safetensors file
-                match self.repo.get("model.safetensors") {
-                    Ok(file) => Ok(vec![file]),
-                    Err(e) => Err(anyhow::anyhow!("Failed to load safetensors file: {}", e)),
-                }
+                let file = self.repo.get("model.safetensors")?;
+                Ok(vec![file])
             }
         }
     }
@@ -86,7 +93,7 @@ impl ModelConfig {
     fn get_tokenizer(&self) -> Result<Tokenizer> {
         let tokenizer_filename = self.repo.get("tokenizer.json")?;
 
-        Ok(Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?)
+        Tokenizer::from_file(tokenizer_filename).map_err(Into::into)
     }
 
     #[instrument(skip_all, name="Initialised Model" level = "warn")]
@@ -95,13 +102,12 @@ impl ModelConfig {
         // Load the model configuration
         let config = fs::read_to_string(self.repo.get("config.json")?)?;
         let mut config: Config = serde_json::from_str(&config)?;
-        let tokenizer = self.get_tokenizer()?;
-
-        let filenames = self.hub_load_safetensors()?;
-
         if self.fast {
             config.hidden_act = HiddenAct::GeluApproximate;
         }
+        let tokenizer = self.get_tokenizer()?;
+
+        let filenames = self.hub_load_safetensors()?;
 
         let model = {
             let vb = unsafe {
@@ -131,11 +137,10 @@ impl Default for ModelConfig {
 }
 
 impl TryFrom<ModelConfig> for EmbeddingModel {
+    type Error = crate::error::Error;
     fn try_from(value: ModelConfig) -> Result<Self> {
         value.initialise_model()
     }
-
-    type Error = E;
 }
 
 impl ModelConfig {
@@ -187,8 +192,8 @@ impl<D> ModelConfigBuilder<Unset, D> {
 }
 
 impl<M> ModelConfigBuilder<M, Unset> {
-    pub fn device(self, cpu: bool) -> ModelConfigBuilder<M, Set> {
-        let device = match Self::get_device(cpu) {
+    pub fn device(self, use_device: bool) -> ModelConfigBuilder<M, Set> {
+        let device = match Self::get_device(use_device) {
             Ok(device) => device,
             Err(e) => {
                 error!("Failed to get device: {}. Defaulting to CPU.", e);
@@ -231,7 +236,7 @@ impl ModelConfigBuilder<Set, Set> {
 
     pub fn build(self) -> ModelConfig {
         let mut builder = ApiBuilder::new()
-            .with_token(self.token.into())
+            .with_token(self.token)
             .with_progress(self.progress_bar);
 
         if let Some(cache_dir) = self.cache_dir {
@@ -251,8 +256,8 @@ impl ModelConfigBuilder<Set, Set> {
 }
 
 impl<M, D> ModelConfigBuilder<M, D> {
-    fn get_device(cpu: bool) -> Result<Device> {
-        if cpu {
+    fn get_device(use_device: bool) -> Result<Device> {
+        if !use_device {
             Ok(Device::Cpu)
         } else if cuda_is_available() {
             Ok(Device::new_cuda(0)?)
@@ -311,16 +316,14 @@ impl EmbeddingModel {
             ..Default::default()
         }));
 
-        let tokens = tokenizer
-            .encode_batch(sentences.to_vec(), true)
-            .map_err(E::msg)?;
+        let tokens = tokenizer.encode_batch(sentences.to_vec(), true)?;
 
         let input_ids = tokens
             .into_iter()
             .map(|enc| enc.get_ids().to_vec())
             .collect::<Vec<_>>();
 
-        Ok(Tensor::new(input_ids, &self.device())?)
+        Tensor::new(input_ids, self.device()).map_err(Into::into)
     }
 
     #[instrument(skip_all, level = "debug")]
@@ -331,7 +334,7 @@ impl EmbeddingModel {
 
         // Mean pooling to get a single embedding vector
         let seq_len = input_ids.dim(1)? as f64;
-        { embeddings.sum(1)? / seq_len }.map_err(E::msg)
+        { embeddings.sum(1)? / seq_len }.map_err(Into::into)
     }
 
     #[instrument(skip(self), ret(Debug), name = "Encode Sentence")]
@@ -371,7 +374,7 @@ impl EmbeddingModel {
         assert!(batch_size > 0, "Batch size must be greater than 0");
 
         let sentences = sentences.into_iter().collect::<Vec<_>>();
-        tracing::Span::current().record("number_of_sentences", &sentences.len());
+        tracing::Span::current().record("number_of_sentences", sentences.len());
 
         // Sort sentences by length
         let mut sentence_lengths: Vec<_> = sentences
@@ -413,23 +416,23 @@ impl EmbeddingModel {
         // Reorder embeddings to original order
         let mut reordered_embeddings =
             vec![
-                Tensor::zeros(&[embeddings.dim(1)?], DType::F32, &self.device())?;
+                Tensor::zeros(&[embeddings.dim(1)?], DType::F32, self.device())?;
                 embeddings.dim(0)?
             ];
         for (i, &idx) in length_sorted_idx.iter().enumerate() {
             reordered_embeddings[idx] = embeddings.get(i)?;
         }
 
-        Ok(Tensor::stack(&reordered_embeddings, 0)?)
+        Tensor::stack(&reordered_embeddings, 0).map_err(Into::into)
     }
 
     #[instrument(skip_all)]
     pub fn format_batch_embeddings(embeddings: Tensor) -> Result<Vec<Vec<f32>>> {
-        embeddings.to_vec2::<f32>().map_err(E::msg)
+        embeddings.to_vec2::<f32>().map_err(Into::into)
     }
 
     #[instrument(skip_all)]
     pub fn format_embeddings(embeddings: Tensor) -> Result<Vec<f32>> {
-        embeddings.to_vec1().map_err(E::msg)
+        embeddings.to_vec1().map_err(Into::into)
     }
 }
