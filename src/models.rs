@@ -7,7 +7,6 @@ use std::fs::{self, File};
 use std::marker::PhantomData;
 use std::path::PathBuf;
 
-use candle_core::utils::{cuda_is_available, metal_is_available};
 use candle_core::{DType, Device, Tensor};
 use candle_nn::var_builder::VarBuilderArgs;
 use candle_transformers::models::bert::{BertModel, Config, HiddenAct, DTYPE};
@@ -193,16 +192,9 @@ impl<D> ModelConfigBuilder<Unset, D> {
 
 impl<M> ModelConfigBuilder<M, Unset> {
     pub fn device(self, use_device: bool) -> ModelConfigBuilder<M, Set> {
-        let device = match Self::get_device(use_device) {
-            Ok(device) => device,
-            Err(e) => {
-                error!("Failed to get device: {}. Defaulting to CPU.", e);
-                Device::Cpu
-            }
-        };
         ModelConfigBuilder {
             model_id: self.model_id,
-            device: Some(device),
+            device: Some(Self::get_device(use_device)),
             token: self.token,
             fast: self.fast,
             progress_bar: self.progress_bar,
@@ -256,30 +248,44 @@ impl ModelConfigBuilder<Set, Set> {
 }
 
 impl<M, D> ModelConfigBuilder<M, D> {
-    fn get_device(use_device: bool) -> Result<Device> {
+    fn get_device(use_device: bool) -> Device {
         if !use_device {
             info!("Running on CPU.");
-            Ok(Device::Cpu)
-        } else if cuda_is_available() {
-            info!("CUDA is available, using GPU.");
-            Ok(Device::new_cuda(0)?)
-        } else if metal_is_available() {
-            info!("Metal is available, using GPU.");
-            Ok(Device::new_metal(0)?)
+            Device::Cpu
         } else {
-            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-            {
-                warn!(
-                    "Running on CPU, to run on GPU(metal), build this example with `--features metal`"
-                );
-            }
-            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-            {
-                warn!("Running on CPU, to run on GPU, build this example with `--features cuda`");
-            }
-            Ok(Device::Cpu)
+            initialize_device()
         }
     }
+}
+
+#[cfg(feature = "metal")]
+fn initialize_device() -> Device {
+    info!("Metal feature enabled, using GPU.");
+    Device::new_metal(ordinal).unwrap_or({
+        warn!("Failed to initialize Metal device, using CPU.");
+        Device::Cpu
+    })
+}
+
+#[cfg(feature = "cuda")]
+fn initialize_device() -> Device {
+    info!("CUDA available, using GPU.");
+    Device::new_cuda(0).unwrap_or({
+        warn!("Failed to initialize CUDA device, using CPU.");
+        Ok(Device::Cpu)
+    })
+}
+#[cfg(not(any(feature = "metal", feature = "cuda")))]
+fn initialize_device() -> Device {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        warn!("Running on CPU, to run on GPU(metal), build this example with `--features metal`");
+    }
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    {
+        warn!("Running on CPU, to run on GPU, build this example with `--features cuda`");
+    }
+    Device::Cpu
 }
 
 pub struct EmbeddingModel {
