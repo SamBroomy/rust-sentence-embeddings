@@ -10,6 +10,8 @@ grpc_port := "50051"
 
 alias b := build
 alias r := run
+alias bcr := build_container
+alias rcr := run_container
 
 # List all the available commands
 [private]
@@ -34,6 +36,30 @@ run:
 [windows]
 run:
     cargo run {{ release_flag }} --features cuda
+
+# Run the rust project with the grpc example
+[group('rust')]
+run_example_grpc:
+    cargo run --example grpc_client
+
+# Run the rust project with the grpc_batch example
+[group('rust')]
+run_example_grpc_batch:
+    cargo run -example grpc_client_batch
+
+# Run the rust project with the http example
+[group('rust')]
+run_example_http:
+    cargo run --example http_client
+
+# Run the rust project with the http_batch example
+[group('rust')]
+run_example_http_batch:
+    cargo run --example http_client_batch
+
+# Run all the examples (ensure the server is running)
+[group('rust')]
+run_examples: run_example_grpc run_example_grpc_batch run_example_http run_example_http_batch
 
 # Build the docker container
 [group('docker')]

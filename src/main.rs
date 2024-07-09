@@ -81,6 +81,7 @@ async fn main() -> Result<()> {
         "INFO" => Level::INFO,
         "WARN" => Level::WARN,
         "ERROR" => Level::ERROR,
+        "TRACE" => Level::TRACE,
         _ => {
             eprintln!("Invalid log level: {}", args.level);
             std::process::exit(1);
