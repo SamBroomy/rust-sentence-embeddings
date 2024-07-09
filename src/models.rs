@@ -15,7 +15,7 @@ use hf_hub::api::sync::{ApiBuilder, ApiRepo};
 use hf_hub::Repo;
 use serde::{de, Deserialize, Deserializer};
 use tokenizers::Tokenizer;
-use tracing::{error, info, instrument, span, warn};
+use tracing::{info, instrument, span, warn, Span};
 
 // https://huggingface.co/models?library=safetensors&other=bert&sort=trending
 
@@ -261,7 +261,7 @@ impl<M, D> ModelConfigBuilder<M, D> {
 #[cfg(feature = "metal")]
 fn initialize_device() -> Device {
     info!("Metal feature enabled, using GPU.");
-    Device::new_metal(ordinal).unwrap_or({
+    Device::new_metal(0).unwrap_or({
         warn!("Failed to initialize Metal device, using CPU.");
         Device::Cpu
     })
@@ -279,11 +279,11 @@ fn initialize_device() -> Device {
 fn initialize_device() -> Device {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        warn!("Running on CPU, to run on GPU(metal), build this example with `--features metal`");
+        warn!("Running on CPU, to run on GPU(metal), build/run with `--features metal`");
     }
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     {
-        warn!("Running on CPU, to run on GPU, build this example with `--features cuda`");
+        warn!("Running on CPU, to run on GPU, build/run with `--features cuda`");
     }
     Device::Cpu
 }
@@ -344,11 +344,24 @@ impl EmbeddingModel {
         { embeddings.sum(1)? / seq_len }.map_err(Into::into)
     }
 
-    #[instrument(skip(self), ret(Debug), name = "Encode Sentence")]
+    #[instrument(skip_all, ret(Debug), name = "Encode Sentence", fields(input))]
     pub fn encode<S>(&self, sentence: S) -> Result<Tensor>
     where
         S: AsRef<str> + Debug,
     {
+        // Only log the first 30 characters of the sentence and append ... if it's longer
+        let input = if sentence.as_ref().chars().count() > 30 {
+            sentence
+                .as_ref()
+                .chars()
+                .take(30)
+                .chain(std::iter::once('…'))
+                .collect()
+        } else {
+            sentence.as_ref().to_string()
+        };
+
+        Span::current().record("input", input);
         let input_ids = self.tokenize(&[sentence.as_ref()])?;
         Ok(self.forward(&input_ids)?.flatten_to(1)?)
     }

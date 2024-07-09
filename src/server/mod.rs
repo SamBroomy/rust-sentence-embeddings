@@ -122,9 +122,7 @@ mod tests {
             create_http_server(port, model);
 
         // Create a background task to run the server
-        let server_handle = tokio::spawn(async move {
-            server;
-        });
+        let server_handle = tokio::spawn(async move { server });
 
         // Simulate some client requests or other interactions here if needed
         // For example, you could use a hyper client to send requests to your server
