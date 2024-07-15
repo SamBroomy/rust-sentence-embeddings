@@ -21,10 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let start = std::time::Instant::now();
 
-    let request = Request::new(EmbedBatchRequest {
-        texts: texts,
-        batch_size,
-    });
+    let request = Request::new(EmbedBatchRequest { texts, batch_size });
 
     match client.embed_batch(request).await {
         Ok(response) => {

@@ -75,7 +75,11 @@ impl ModelConfig {
                 let pathbufs: Vec<PathBuf> = json
                     .weight_map
                     .iter()
-                    .map(|f| self.repo.get(f).unwrap())
+                    .map(|f| {
+                        self.repo
+                            .get(f)
+                            .unwrap_or_else(|_| panic!("Failed to get file '{:?}'", f))
+                    })
                     .collect();
 
                 Ok(pathbufs)

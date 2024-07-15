@@ -16,14 +16,15 @@ cuda = ["candle-core/cuda"]
 anyhow = "1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# candle-*** = "0.6.0" does not work with metal Metal(Message("no metal implementation for layer-norm")) despite the fact it works with 0.5.1
 candle-core = "0.5"
 candle-nn = "0.5"
 candle-transformers = "0.5"
-hf-hub = { version = "0.3", features = ["tokio"] }
+hf-hub = "0.3"
 tokenizers = "0.19"
 # Web
 axum = "0.7"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tonic = "0.12"
 prost = "0.13"
 # Logging
